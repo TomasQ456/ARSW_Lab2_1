@@ -4,6 +4,9 @@
 Laboratorio de programación concurrente: condiciones de carrera, sincronización y colecciones seguras.
 
 ---
+## Autores
+Tomás Quiceno 
+Deisy Guzmán
 
 ## Requisitos
 
@@ -65,6 +68,29 @@ co.eci.snake
 4. Entrega en el reporte de laboratorio **las observaciones y/o comentarios** explicando tu diseño de sincronización (qué lock, qué condición, cómo evitas _lost wakeups_).
 
 > Objetivo didáctico: practicar suspensión/continuación **sin** espera activa y consolidar el modelo de monitores en Java.
+
+## Solución Parte I
+
+### Modificaciones en PrimeFinderThread.java
+
+Se necesita que cada hilo consulte periódicamente si debe pausarse. Se le pasa una referencia de Control y se llama a un método que evalúe la condición en cada iteración del ciclo.
+
+![alt text](img/image.png)
+![alt text](img/image1.png)
+
+### Modificaciones en Control.java
+
+En el controlador, se define la variable de estado (isPaused), el método sincronizado para que los hilos esperen, y el ciclo de suspensión/reanudación usando temporizadores y la lectura del teclado.
+
+![alt text](img/image2.png)
+![alt text](img/image3.png)
+![alt text](img/image4.png)
+
+-  ¿Qué Lock se utilizó?: Se utilizó el monitor de la instancia de la clase Control (representado por this dentro de sus métodos sincronizados). Al pasar esta referencia a cada PrimeFinderThread, garantizamos que tanto el hilo coordinador como los hilos trabajadores sincronicen sobre el mismo objeto en memoria.
+
+-  ¿Qué condición dicta la pausa?: La variable booleana isPaused. Su acceso y modificación están protegidos por el bloque synchronized, asegurando visibilidad y previniendo condiciones de carrera.
+
+- ¿Cómo se evitan los lost wakeups (despertares perdidos) y spurious wakeups?: En lugar de usar un simple bloque if (isPaused), el método wait() se implementó dentro de un ciclo while (isPaused). Si un hilo recibe un notify de forma accidental (spurious wakeup) o antes de que realmente deba despertar, el ciclo while forzará a que vuelva a evaluar la variable isPaused. Si sigue siendo true, el hilo volverá a invocar wait() inmediatamente de forma segura.
 
 ---
 
