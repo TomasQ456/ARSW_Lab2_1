@@ -126,7 +126,93 @@ En el controlador, se define la variable de estado (isPaused), el método sincro
 
 > Entregables detallados más abajo.
 
----
+## Solución Parte II — SnakeRace concurrente
+
+### 1) Análisis de concurrencia
+
+- La autonomía se logra asignando a cada serpiente su propio flujo de ejecución independiente. En la clase SnakeApp, se utiliza una fábrica de hilos moderna mediante Executors.newVirtualThreadPerTaskExecutor(). Por cada instancia de Snake creada, se envía una tarea SnakeRunner (que implementa Runnable) a este ejecutor. En su método run(), cada hilo virtual mantiene un ciclo infinito donde calcula su dirección, avanza un paso consultando al tablero, y luego se suspende a sí mismo usando Thread.sleep() por una cantidad de milisegundos que varía si está en modo "turbo". Esto permite que múltiples serpientes se muevan y pausen de forma concurrente sin bloquear el hilo principal ni la interfaz gráfica.
+
+- **Condiciones carrera:**
+  En la clase Snake existe un riesgo crítico de inconsistencia entre el hilo virtual de la serpiente y el hilo despachador de eventos de Swing (EDT). El hilo virtual modifica constantemente el cuerpo de la serpiente llamando al método advance(). Simultáneamente, el hilo de la UI llama a snapshot() (desde GamePanel.paintComponent) para dibujar la serpiente en pantalla. Como ambas operaciones acceden al mismo ArrayDeque sin ningún mecanismo de exclusión mutua, se puede generar un estado inconsistente o una ConcurrentModificationException en tiempo de ejecución.
+
+  **Condiciones o estructuras no seguras:**
+  - ArrayDeque <Position> en Snake, esta colección no es thread-safe y está siendo accedida concurrentemente para lectura (UI) y escritura (Virtual Threads).
+  - HashSet y HashMap en Board, el tablero utiliza HashSet para los ratones, obstáculos y turbos, y un HashMap para los teletransportadores. Estas colecciones no deberían funcionar bajo acceso concurrente no coordinado.
+
+  **Sincronización innecesaria y problemas de espera:**
+  - Sincronización excesiva en la clase Board, el método step(Snake snake) y todos los métodos de acceso (mice(), obstacles(), etc.) tienen el modificador synchronized en su firma. Esto significa que utilizan el lock de la instancia del objeto Board entero (un coarse-grained lock). Si se ejecuta el juego con -Dsnakes=20, las 20 serpientes chocarán intentando entrar al método step(); 19 hilos virtuales se bloquearán esperando a que 1 sola serpiente termine de moverse. Esto destruye por completo el beneficio de la concurrencia.
+
+  - Ausencia de mecanismo de pausa en los hilos, el botón "Action" de la UI invoca clock.pause(), deteniendo únicamente el repintado gráfico de la aplicación, pero los hilos SnakeRunner ignoran este estado y continúan ejecutándose de fondo. Para implementar la pausa correctamente en la Parte II, se requerirá un mecanismo que detenga los hilos sin caer en espera activa (busy-waiting).
+
+### 2) Correcciones mínimas y regiones críticas
+
+### Modificaciones en Board.java
+
+El problema principal en Board es el synchronized en toda la firma del método step(), lo que obligaba a todas las serpientes a moverse de a una por vez. Al usar estructuras del paquete java.util.concurrent, las colecciones gestionan sus propios bloqueos internos a nivel de segmento (nodos o baldes), permitiendo el acceso múltiple.
+
+![alt text](img/image5.png)
+![alt text](img/image6.png)
+![alt text](img/image7.png)
+
+### Modificaciones en Snake.java
+
+Se cambia el ArrayDeque por un ConcurrentLinkedDeque. De esta manera, el hilo virtual puede agregar y eliminar posiciones del cuerpo sin interrumpir al hilo de Swing (la UI) cuando este lee la colección para dibujar la serpiente.
+
+![alt text](img/image8.png)
+![alt text](img/image9.png)
+
+- **Riesgo:** El método step en Board.java tenía un modificador synchronized a nivel de método. Esto causaba contención masiva (coarse-grained locking), serializando el movimiento de todas las serpientes e impidiendo la concurrencia real. Además, el uso de colecciones no seguras como HashSet y ArrayDeque exponía el programa a ConcurrentModificationException.
+
+- **Solución y Regiones Críticas:** Se eliminó el modificador synchronized de todos los métodos en Board. La protección de la región crítica se delegó internamente a las colecciones del paquete java.util.concurrent (como ConcurrentHashMap.newKeySet() y ConcurrentLinkedDeque).
+
+- **Alcance Mínimo:** Esta solución es de "alcance mínimo" (lock striping) porque las colecciones concurrentes solo bloquean los nodos específicos de memoria que están siendo modificados (por ejemplo, cuando dos serpientes comen ratones en coordenadas distintas), permitiendo que el resto del tablero siga siendo leído y escrito simultáneamente por otros hilos sin bloqueos globales.
+
+### 3) Control de ejecución seguro (UI)
+
+### Clase GameController.java
+
+![alt text](img/image10.png)
+
+### Modificaciones de SnakeRunner.java
+
+![alt text](img/image11.png)
+
+### Modificaciones de SnakeApp.java
+
+![alt text](img/image12.png)
+![alt text](img/image13.png)
+![alt text](img/image14.png)
+![alt text](img/image15.png)
+![alt text](img/image16.png)
+![alt text](img/image17.png)
+![alt text](img/image18.png)
+![alt text](img/image19.png)
+
+- **Problema abordado:** Si la UI calculara la serpiente más larga inmediatamente al pulsar el botón, ocurriría tearing, ya que los Virtual Threads podrían estar a mitad del método step() o durmiendo, alterando su tamaño fracciones de segundo después de calcular las estadísticas.
+
+- **Solución implementada:** Se diseñó un mecanismo de sincronización condicional (GameController) basado en contadores (pausedCount).
+
+- **¿Por qué evita bloqueos amplios?:** Porque la UI lanza la solicitud de pausa (gameController.pause()) dentro de un hilo virtual temporal, dejando libre el Hilo de Eventos de Swing (EDT) para que la ventana no se congele. Solo cuando el Monitor detecta que el 100% de los hilos trabajadores entraron al estado wait(), se le notifica a la UI, garantizando que el acceso a los datos de tamaño de las serpientes es estrictamente secuencial y seguro en ese momento del tiempo.
+
+### 4) Robustez bajo carga
+
+### Capturas de ejecución 
+
+![alt text](img/image20.png)
+![alt text](img/image21.png)
+![alt text](img/image22.png)
+
+- **Ausencia de ConcurrentModificationException:**
+Al someter el juego a un N alto (ej. 25 serpientes), el uso original de HashSet y ArrayDeque habría causado colapsos inmediatos. Esto se superó al migrar el modelo de datos a la familia java.util.concurrent. El uso de ConcurrentHashMap.newKeySet() en el tablero y ConcurrentLinkedDeque en el cuerpo de las serpientes garantiza que los iteradores no fallen si un hilo modifica la estructura mientras otro la recorre (son weakly consistent).
+
+- **Prevención de Lecturas Inconsistentes:**
+A altas velocidades, si el hilo de Swing calculara las estadísticas al mismo tiempo que los Virtual Threads calculan su movimiento, las longitudes registradas serían inexactas. El patrón de monitor implementado en GameController actúa como una barrera de sincronización: el cálculo de la serpiente más larga y más corta solo ocurre cuando la variable pausedCount iguala al total de hilos, garantizando que el sistema entero esté en reposo absoluto (estado determinista) antes de la lectura.
+
+- **Prevención de Deadlocks (Abrazos mortales):**
+El código está libre de deadlocks porque se eliminó la anidación de bloqueos. Las colecciones concurrentes manejan sus propios locks a nivel interno (lock striping) sin bloquear toda la estructura. El único monitor explícito del sistema (GameController) tiene métodos sincronizados independientes que no invocan otros recursos sincronizados de terceros, eliminando la posibilidad de espera circular.
+
+- **Ausencia de Condiciones de Carrera en las Reglas (Ratones y Turbos):**
+¿Qué sucede si dos o más serpientes llegan a la misma coordenada exacta de un ratón o un turbo en el mismo milisegundo? Gracias a que la evaluación se hace con el método remove(Object o) sobre un conjunto concurrente, la operación es atómica. El ConcurrentHashMap internamente garantiza que solo un hilo reciba el retorno true al remover el ratón, mientras que los demás hilos recibirán false. Por lo tanto, el evento de "crecer y generar un nuevo obstáculo" se dispara una sola vez, manteniendo la consistencia lógica del juego sin duplicar entidades.
 
 ## Entregables
 

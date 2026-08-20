@@ -2,9 +2,10 @@ package co.eci.snake.core;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.concurrent.ConcurrentLinkedDeque;
 
 public final class Snake {
-  private final Deque<Position> body = new ArrayDeque<>();
+  private final Deque<Position> body = new ConcurrentLinkedDeque<>();
   private volatile Direction direction;
   private int maxLength = 5;
 
